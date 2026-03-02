@@ -1373,6 +1373,7 @@
     <ClCompile Include="H2MOD\Modules\CustomVariantSettings\CustomVariantSettings.cpp" />
     <ClCompile Include="H2MOD\Modules\DirectorHooks\DirectorHooks.cpp" />
     <ClCompile Include="H2MOD\Modules\EventHandler\EventHandler.cpp" />
+    <ClCompile Include="H2MOD\Modules\TheaterExport\TheaterExport.cpp" />
     <ClCompile Include="Blam\Engine\physics\character_physics_mode_melee.cpp" />
     <ClCompile Include="H2MOD\Modules\Input\KeyboardInput.cpp" />
     <ClCompile Include="H2MOD\Modules\MainMenu\MapSlots.cpp" />
@@ -2493,6 +2494,7 @@
     <ClInclude Include="H2MOD\Modules\CustomVariantSettings\CustomVariantSettings.h" />
     <ClInclude Include="H2MOD\Modules\DirectorHooks\DirectorHooks.h" />
     <ClInclude Include="H2MOD\Modules\EventHandler\EventHandler.hpp" />
+    <ClInclude Include="H2MOD\Modules\TheaterExport\TheaterExport.h" />
     <ClInclude Include="Blam\Engine\physics\character_physics_mode_melee.h" />
     <ClInclude Include="H2MOD\Modules\Input\ControllerInput.h" />
     <ClInclude Include="H2MOD\Modules\Input\KeyboardInput.h" />

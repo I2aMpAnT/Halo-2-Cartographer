@@ -3,6 +3,7 @@
   <ItemGroup>
     <ClCompile Include="Blam\Engine\game\players.cpp" />
     <ClCompile Include="H2MOD\Modules\EventHandler\EventHandler.cpp" />
+    <ClCompile Include="H2MOD\Modules\TheaterExport\TheaterExport.cpp" />
     <ClCompile Include="H2MOD\Modules\MapManager\MapManager.cpp" />
     <ClCompile Include="Blam\Engine\networking\messages\network_message_type_collection.cpp" />
     <ClCompile Include="Blam\Engine\Memory\bitstream.cpp" />
@@ -632,6 +633,7 @@
     <ClInclude Include="H2MOD\Modules\PlaylistLoader\PlaylistLoader.h" />
     <ClInclude Include="Blam\Engine\physics\physics_constants.h" />
     <ClInclude Include="H2MOD\Modules\EventHandler\EventHandler.hpp" />
+    <ClInclude Include="H2MOD\Modules\TheaterExport\TheaterExport.h" />
     <ClInclude Include="Blam\Engine\physics\character_physics_mode_melee.h" />
     <ClInclude Include="H2MOD\Modules\GamePhysics\Patches\ProjectileFix.h" />
     <ClInclude Include="Blam\Cache\TagGroups\shader_pass_definition.hpp" />
