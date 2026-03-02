@@ -7,23 +7,19 @@
  * to the SpartanLounge WebSocket stats server (ws_server.py:9090).
  *
  * Uses the existing HTTP webhook protocol that ws_server.py already supports:
- *   POST /webhook/register    - Announce dedi on startup
  *   POST /webhook/scoreboard  - Push live scoreboard (~3Hz from game loop)
- *   POST /webhook/killfeed    - Push kill events
  *   POST /webhook/game        - Push game-end notification
  *
- * Additionally pushes per-tick player spatial data (position, orientation,
- * aiming, velocity) via a new webhook endpoint that SpartanLounge can add:
- *   POST /webhook/theater     - Per-tick player positions for 3D theater view
+ * Auto-registers with ws_server.py on first scoreboard push (no explicit
+ * register needed - ws_server.py's _auto_register handles it).
  *
  * Architecture:
  *   game_loop callback (execute_after)
- *     -> collect player data via c_player_in_game_iterator + unit_datum
+ *     -> collect player data via c_player_with_unit_iterator + statborg
  *     -> serialize to JSON via RapidJSON (already bundled)
  *     -> HTTP POST via libcurl (already bundled) on a background thread
  *
  * Only active on dedicated servers (shell_is_dedicated_server()).
- * Configurable via H2Config: target host/port and tick rate divisor.
  */
 
 namespace TheaterExport

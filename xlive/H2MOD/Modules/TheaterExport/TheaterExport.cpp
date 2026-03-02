@@ -8,9 +8,7 @@
 #include "game/players.h"
 #include "networking/logic/life_cycle_manager.h"
 #include "networking/Session/network_session.h"
-#include "objects/objects.h"
 #include "shell/shell.h"
-#include "text/unicode.h"
 #include "units/units.h"
 
 #include "H2MOD/Modules/EventHandler/EventHandler.hpp"
@@ -32,10 +30,6 @@ static const int   k_theater_export_port = 9090;
 // How often to push scoreboard data (in game ticks).
 // At 30 tick: divisor 10 = ~3Hz, divisor 5 = ~6Hz
 static const int k_scoreboard_tick_divisor = 10;
-
-// How often to push theater spatial data (in game ticks).
-// At 30 tick: divisor 3 = ~10Hz
-static const int k_theater_tick_divisor = 3;
 
 // Game engine type names (matches e_game_engine_type)
 static const char* k_game_engine_names[] = {
@@ -61,10 +55,8 @@ static const char* k_team_names[] = {
 /* globals */
 
 static bool g_theater_export_initialized = false;
-static bool g_theater_export_registered = false;
 static bool g_shutdown_requested = false;
 static uint32 g_last_scoreboard_tick = 0;
-static uint32 g_last_theater_tick = 0;
 static e_game_life_cycle g_last_life_cycle = _life_cycle_none;
 
 // Background thread for HTTP posts (so we don't block the game loop)
@@ -84,9 +76,7 @@ static std::vector<s_post_request> g_post_queue;
 
 static void theater_export_game_loop_callback(void);
 static void theater_export_lifecycle_callback(e_game_life_cycle state);
-static void theater_export_post_register(void);
 static void theater_export_post_scoreboard(void);
-static void theater_export_post_theater_data(void);
 static void theater_export_post_game_end(void);
 static void theater_export_queue_post(const char* endpoint, const char* json);
 static DWORD WINAPI theater_export_post_thread(LPVOID param);
@@ -185,13 +175,6 @@ static void theater_export_game_loop_callback(void)
 	if (life_cycle != _life_cycle_in_game)
 		return;
 
-	// Register with ws_server.py on first in-game tick
-	if (!g_theater_export_registered)
-	{
-		theater_export_post_register();
-		g_theater_export_registered = true;
-	}
-
 	uint32 current_tick = game_time_get();
 
 	// Scoreboard push at ~3Hz (every k_scoreboard_tick_divisor ticks)
@@ -199,13 +182,6 @@ static void theater_export_game_loop_callback(void)
 	{
 		theater_export_post_scoreboard();
 		g_last_scoreboard_tick = current_tick;
-	}
-
-	// Theater spatial data push at ~10Hz (every k_theater_tick_divisor ticks)
-	if (current_tick - g_last_theater_tick >= (uint32)k_theater_tick_divisor)
-	{
-		theater_export_post_theater_data();
-		g_last_theater_tick = current_tick;
 	}
 }
 
@@ -215,43 +191,18 @@ static void theater_export_lifecycle_callback(e_game_life_cycle state)
 	if (state == _life_cycle_post_game && g_last_life_cycle == _life_cycle_in_game)
 	{
 		theater_export_post_game_end();
-		g_theater_export_registered = false;
 	}
 
 	if (state == _life_cycle_none || state == _life_cycle_pre_game)
 	{
-		g_theater_export_registered = false;
 		g_last_scoreboard_tick = 0;
-		g_last_theater_tick = 0;
 	}
 
 	g_last_life_cycle = state;
 }
 
-// POST /webhook/register - announce this dedi to ws_server.py
-static void theater_export_post_register(void)
-{
-	rapidjson::Document doc;
-	doc.SetObject();
-	auto& alloc = doc.GetAllocator();
-
-	// Use the dedi server name as the host identifier
-	char dedi_name[64];
-	_snprintf_s(dedi_name, sizeof(dedi_name), _TRUNCATE, "%s", H2Config_dedi_server_name);
-
-	doc.AddMember("host", rapidjson::Value(dedi_name, alloc), alloc);
-	doc.AddMember("port", rapidjson::Value("0"), alloc);  // No overlay WS port; we push via HTTP only
-	doc.AddMember("dedi_type", rapidjson::Value("cartographer"), alloc);
-
-	rapidjson::StringBuffer buffer;
-	rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-	doc.Accept(writer);
-
-	theater_export_queue_post("/webhook/register", buffer.GetString());
-	event(_event_status, "TheaterExport: Registered with SpartanLounge");
-}
-
 // POST /webhook/scoreboard - live scoreboard with team structure
+// First scoreboard push auto-registers the dedi with ws_server.py
 static void theater_export_post_scoreboard(void)
 {
 	c_network_session* session = NULL;
@@ -413,155 +364,6 @@ static void theater_export_post_scoreboard(void)
 	doc.Accept(writer);
 
 	theater_export_queue_post("/webhook/scoreboard", buffer.GetString());
-}
-
-// POST /webhook/theater - per-tick player spatial data for 3D theater view
-static void theater_export_post_theater_data(void)
-{
-	if (!game_in_progress() || !game_is_multiplayer())
-		return;
-
-	char dedi_name[64];
-	_snprintf_s(dedi_name, sizeof(dedi_name), _TRUNCATE, "%s", H2Config_dedi_server_name);
-
-	c_network_session* session = NULL;
-	network_life_cycle_in_squad_session(&session);
-
-	rapidjson::Document doc;
-	doc.SetObject();
-	auto& alloc = doc.GetAllocator();
-
-	doc.AddMember("host", rapidjson::Value(dedi_name, alloc), alloc);
-	doc.AddMember("dedi_name", rapidjson::Value(dedi_name, alloc), alloc);
-	doc.AddMember("tick", game_time_get(), alloc);
-
-	rapidjson::Value players_arr(rapidjson::kArrayType);
-
-	c_player_with_unit_iterator player_iterator;
-	while (player_iterator.next())
-	{
-		player_datum* player = player_iterator.get_datum();
-		datum player_index = player_iterator.get_index();
-
-		if (!player || player->unit_index == NONE)
-			continue;
-
-		unit_datum* unit = unit_try_and_get(player->unit_index);
-		if (!unit)
-			continue;
-
-		// Get player name
-		char player_name[64];
-		if (session)
-		{
-			s_membership_player* membership = session->get_player_membership(player_index);
-			if (membership && membership->properties_valid)
-				wchar_to_utf8(membership->configuration.player_name, player_name, sizeof(player_name));
-			else
-				_snprintf_s(player_name, sizeof(player_name), _TRUNCATE, "Player");
-		}
-		else
-		{
-			_snprintf_s(player_name, sizeof(player_name), _TRUNCATE, "Player");
-		}
-
-		rapidjson::Value p(rapidjson::kObjectType);
-		p.AddMember("name", rapidjson::Value(player_name, alloc), alloc);
-
-		// Position (world coordinates)
-		const _object_datum& obj = unit->object;
-		{
-			rapidjson::Value pos(rapidjson::kObjectType);
-			pos.AddMember("x", obj.position.x, alloc);
-			pos.AddMember("y", obj.position.y, alloc);
-			pos.AddMember("z", obj.position.z, alloc);
-			p.AddMember("position", pos, alloc);
-		}
-
-		// Forward vector (orientation)
-		{
-			rapidjson::Value fwd(rapidjson::kObjectType);
-			fwd.AddMember("x", obj.forward.i, alloc);
-			fwd.AddMember("y", obj.forward.j, alloc);
-			fwd.AddMember("z", obj.forward.k, alloc);
-			p.AddMember("forward", fwd, alloc);
-		}
-
-		// Translational velocity
-		{
-			rapidjson::Value vel(rapidjson::kObjectType);
-			vel.AddMember("x", obj.translational_velocity.i, alloc);
-			vel.AddMember("y", obj.translational_velocity.j, alloc);
-			vel.AddMember("z", obj.translational_velocity.k, alloc);
-			p.AddMember("velocity", vel, alloc);
-		}
-
-		// Aiming vector (where the player is aiming)
-		{
-			rapidjson::Value aim(rapidjson::kObjectType);
-			aim.AddMember("x", unit->unit.aiming_vector.i, alloc);
-			aim.AddMember("y", unit->unit.aiming_vector.j, alloc);
-			aim.AddMember("z", unit->unit.aiming_vector.k, alloc);
-			p.AddMember("aiming", aim, alloc);
-		}
-
-		// Looking vector
-		{
-			rapidjson::Value look(rapidjson::kObjectType);
-			look.AddMember("x", unit->unit.looking_vector.i, alloc);
-			look.AddMember("y", unit->unit.looking_vector.j, alloc);
-			look.AddMember("z", unit->unit.looking_vector.k, alloc);
-			p.AddMember("looking", look, alloc);
-		}
-
-		// Movement input (throttle)
-		{
-			rapidjson::Value thr(rapidjson::kObjectType);
-			thr.AddMember("x", unit->unit.throttle.i, alloc);
-			thr.AddMember("y", unit->unit.throttle.j, alloc);
-			thr.AddMember("z", unit->unit.throttle.k, alloc);
-			p.AddMember("throttle", thr, alloc);
-		}
-
-		// Combat state
-		p.AddMember("primary_trigger", unit->unit.primary_trigger, alloc);
-		p.AddMember("secondary_trigger", unit->unit.secondary_trigger, alloc);
-		p.AddMember("zoom_level", (int)unit->unit.zoom_level, alloc);
-		p.AddMember("crouching", unit->unit.crouching, alloc);
-		p.AddMember("active_camo_power", unit->unit.active_camo_power, alloc);
-
-		// Health/shields
-		p.AddMember("shield_vitality", obj.shield_vitality, alloc);
-		p.AddMember("body_vitality", obj.body_vitality, alloc);
-		p.AddMember("shield_damage", obj.current_shield_damage, alloc);
-		p.AddMember("body_damage", obj.current_body_damage, alloc);
-
-		// Team
-		p.AddMember("team", (int)unit->unit.unit_team, alloc);
-
-		// Grenade counts
-		{
-			rapidjson::Value grenades(rapidjson::kArrayType);
-			for (int g = 0; g < k_unit_grenade_types_count; g++)
-			{
-				grenades.PushBack((int)unit->unit.grenade_counts[g], alloc);
-			}
-			p.AddMember("grenades", grenades, alloc);
-		}
-
-		// Alive state
-		p.AddMember("alive", (bool)(unit->unit.unit_flags & _unit_is_alive), alloc);
-
-		players_arr.PushBack(p, alloc);
-	}
-
-	doc.AddMember("players", players_arr, alloc);
-
-	rapidjson::StringBuffer buffer;
-	rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-	doc.Accept(writer);
-
-	theater_export_queue_post("/webhook/theater", buffer.GetString());
 }
 
 // POST /webhook/game - game end notification
