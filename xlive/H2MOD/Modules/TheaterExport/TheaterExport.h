@@ -7,8 +7,11 @@
  * to the SpartanLounge WebSocket stats server (ws_server.py:9090).
  *
  * Uses the existing HTTP webhook protocol that ws_server.py already supports:
- *   POST /webhook/scoreboard  - Push live scoreboard (~3Hz from game loop)
+ *   POST /webhook/scoreboard  - Push live scoreboard + positional data (~3Hz)
  *   POST /webhook/game        - Push game-end notification
+ *
+ * Scoreboard payload matches the HaloCaster format:
+ *   Flat "players" array with stats + position/yaw/pitch/crouching/airborne.
  *
  * Auto-registers with ws_server.py on first scoreboard push (no explicit
  * register needed - ws_server.py's _auto_register handles it).

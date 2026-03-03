@@ -258,29 +258,32 @@ static void theater_export_post_scoreboard(void)
 	// Team count
 	doc.AddMember("team_count", variant->maximum_allowable_teams, alloc);
 
-	// Build team-based player lists (matches existing ws_server.py scoreboard format)
-	rapidjson::Value red_team(rapidjson::kObjectType);
-	rapidjson::Value blue_team(rapidjson::kObjectType);
-	rapidjson::Value red_players(rapidjson::kArrayType);
-	rapidjson::Value blue_players(rapidjson::kArrayType);
-	int red_team_score = 0;
-	int blue_team_score = 0;
-
+	// Team scores
+	rapidjson::Value team_scores(rapidjson::kArrayType);
 	if (statborg)
 	{
-		red_team_score = statborg->get_team_stat(0, _statborg_entry_total_score);
-		blue_team_score = statborg->get_team_stat(1, _statborg_entry_total_score);
+		for (int t = 0; t < (int)variant->maximum_allowable_teams; t++)
+		{
+			rapidjson::Value ts(rapidjson::kObjectType);
+			ts.AddMember("team", t, alloc);
+			ts.AddMember("team_name", rapidjson::Value(get_team_name((int8)t), alloc), alloc);
+			ts.AddMember("score", (int)statborg->get_team_stat(t, _statborg_entry_total_score), alloc);
+			team_scores.PushBack(ts, alloc);
+		}
 	}
+	doc.AddMember("team_scores", team_scores, alloc);
 
-	// Iterate all active players in the session
-	c_player_with_unit_iterator player_iterator;
+	// Flat players array (matches HaloCaster format)
+	rapidjson::Value players(rapidjson::kArrayType);
+
+	c_player_in_game_iterator player_iterator;
 	while (player_iterator.next())
 	{
 		player_datum* player = player_iterator.get_datum();
 		datum player_index = player_iterator.get_index();
 		int32 abs_index = player_iterator.get_absolute_index();
 
-		if (!player || player->unit_index == NONE)
+		if (!player)
 			continue;
 
 		// Get player name
@@ -295,21 +298,31 @@ static void theater_export_post_scoreboard(void)
 			_snprintf_s(player_name, sizeof(player_name), _TRUNCATE, "Player_%d", abs_index);
 		}
 
-		// Get unit data for health/shield info
-		unit_datum* unit = unit_try_and_get(player->unit_index);
+		// Get unit data (may be NULL if player is dead / hasn't spawned)
+		bool has_unit = (player->unit_index != NONE);
+		unit_datum* unit = has_unit ? unit_try_and_get(player->unit_index) : NULL;
 
 		rapidjson::Value p(rapidjson::kObjectType);
 		p.AddMember("name", rapidjson::Value(player_name, alloc), alloc);
+		p.AddMember("index", abs_index, alloc);
 
 		// Stats from statborg
+		int kills = 0, deaths = 0, assists = 0;
 		if (statborg)
 		{
-			p.AddMember("kills", (int)statborg->get_player_stat(abs_index, _statborg_entry_kills), alloc);
-			p.AddMember("deaths", (int)statborg->get_player_stat(abs_index, _statborg_entry_deaths), alloc);
-			p.AddMember("assists", (int)statborg->get_player_stat(abs_index, _statborg_entry_assists), alloc);
+			kills = (int)statborg->get_player_stat(abs_index, _statborg_entry_kills);
+			deaths = (int)statborg->get_player_stat(abs_index, _statborg_entry_deaths);
+			assists = (int)statborg->get_player_stat(abs_index, _statborg_entry_assists);
+			p.AddMember("kills", kills, alloc);
+			p.AddMember("deaths", deaths, alloc);
+			p.AddMember("assists", assists, alloc);
 			p.AddMember("betrayals", (int)statborg->get_player_stat(abs_index, _statborg_entry_betrayals), alloc);
 			p.AddMember("suicides", (int)statborg->get_player_stat(abs_index, _statborg_entry_suicides), alloc);
 			p.AddMember("score", (int)statborg->get_player_stat(abs_index, _statborg_entry_total_score), alloc);
+
+			// K/D ratio (HaloCaster format: deaths=0 returns kills as ratio)
+			double kd = (deaths > 0) ? (double)kills / (double)deaths : (double)kills;
+			p.AddMember("kd_ratio", kd, alloc);
 		}
 
 		// Team info
@@ -325,33 +338,71 @@ static void theater_export_post_scoreboard(void)
 		p.AddMember("team", (int)team_idx, alloc);
 		p.AddMember("team_name", rapidjson::Value(get_team_name(team_idx), alloc), alloc);
 
-		// Health and shields
+		// Alive / dead / quit flags
+		bool alive = unit && (unit->unit.unit_flags & _unit_is_alive);
+		p.AddMember("alive", alive, alloc);
+		p.AddMember("is_dead", !alive, alloc);
+		p.AddMember("is_quit", false, alloc); // TODO: track quit state
+
+		// Positional + spatial data (only meaningful when unit exists)
 		if (unit)
 		{
-			p.AddMember("alive", (bool)(unit->unit.unit_flags & _unit_is_alive), alloc);
+			// Position (world coordinates, 4 decimal precision in JSON)
+			rapidjson::Value pos(rapidjson::kObjectType);
+			pos.AddMember("x", unit->object.position.x, alloc);
+			pos.AddMember("y", unit->object.position.y, alloc);
+			pos.AddMember("z", unit->object.position.z, alloc);
+			p.AddMember("position", pos, alloc);
+
+			// Yaw/Pitch from aiming_vector (i, j, k components)
+			// aiming_vector: i = forward X, j = forward Y, k = vertical component
+			real_vector3d& aim = unit->unit.aiming_vector;
+			float yaw_rad = atan2f(aim.j, aim.i);
+			float pitch_rad = asinf(fmaxf(-0.999f, fminf(0.999f, aim.k)));
+			float yaw_deg = yaw_rad * (180.0f / 3.14159265f);
+			float pitch_deg = pitch_rad * (180.0f / 3.14159265f);
+
+			// Normalize yaw to 0-360
+			if (yaw_deg < 0.0f) yaw_deg += 360.0f;
+
+			p.AddMember("yaw_rad", yaw_rad, alloc);
+			p.AddMember("pitch_rad", pitch_rad, alloc);
+			p.AddMember("yaw_deg", yaw_deg, alloc);
+			p.AddMember("pitch_deg", pitch_deg, alloc);
+
+			// Crouch state (crouching float > 0.5 means crouched)
+			p.AddMember("crouching", unit->unit.crouching > 0.5f, alloc);
+
+			// Airborne - check if player has vertical velocity (no explicit airborne ticks field exposed)
+			bool airborne = fabsf(unit->object.translational_velocity.k) > 0.01f;
+			p.AddMember("airborne", airborne, alloc);
+
+			// Shield and body vitality
 			p.AddMember("shield_vitality", unit->object.shield_vitality, alloc);
 			p.AddMember("body_vitality", unit->object.body_vitality, alloc);
 		}
-
-		// Add to appropriate team array
-		if (team_idx == 0)
-			red_players.PushBack(p, alloc);
-		else if (team_idx == 1)
-			blue_players.PushBack(p, alloc);
 		else
 		{
-			// For FFA or other teams, put in red for now
-			red_players.PushBack(p, alloc);
+			// Player exists but has no unit (dead, not yet spawned)
+			rapidjson::Value pos(rapidjson::kObjectType);
+			pos.AddMember("x", 0.0, alloc);
+			pos.AddMember("y", 0.0, alloc);
+			pos.AddMember("z", 0.0, alloc);
+			p.AddMember("position", pos, alloc);
+			p.AddMember("yaw_rad", 0.0, alloc);
+			p.AddMember("pitch_rad", 0.0, alloc);
+			p.AddMember("yaw_deg", 0.0, alloc);
+			p.AddMember("pitch_deg", 0.0, alloc);
+			p.AddMember("crouching", false, alloc);
+			p.AddMember("airborne", false, alloc);
+			p.AddMember("shield_vitality", 0.0, alloc);
+			p.AddMember("body_vitality", 0.0, alloc);
 		}
+
+		players.PushBack(p, alloc);
 	}
 
-	red_team.AddMember("score", red_team_score, alloc);
-	red_team.AddMember("players", red_players, alloc);
-	blue_team.AddMember("score", blue_team_score, alloc);
-	blue_team.AddMember("players", blue_players, alloc);
-
-	doc.AddMember("red_team", red_team, alloc);
-	doc.AddMember("blue_team", blue_team, alloc);
+	doc.AddMember("players", players, alloc);
 
 	// Game duration (ticks -> seconds)
 	uint32 game_ticks = game_time_get();
